@@ -28,5 +28,5 @@ class ShoppingCartReportProcessor(readSide: SlickReadSide, repository: ShoppingC
       }
       .build()
 
-  override def aggregateTags: Set[AggregateEventTag[Event]] = Event.Tag.allTags
+  override def aggregateTags: Set[AggregateEventTag[Event]] = Event.ShardedTag.allTags
 }

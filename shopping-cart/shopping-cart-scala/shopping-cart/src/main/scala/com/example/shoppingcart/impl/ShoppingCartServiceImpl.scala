@@ -6,9 +6,7 @@ import com.example.shoppingcart.api.ShoppingCartItem
 import com.example.shoppingcart.api.Quantity
 import com.example.shoppingcart.api.ShoppingCartReport
 import com.example.shoppingcart.api.ShoppingCartService
-
 import com.example.shoppingcart.impl.ShoppingCart._
-
 import com.lightbend.lagom.scaladsl.api.ServiceCall
 import com.lightbend.lagom.scaladsl.api.broker.Topic
 import com.lightbend.lagom.scaladsl.api.transport.BadRequest
@@ -19,19 +17,27 @@ import com.lightbend.lagom.scaladsl.persistence.PersistentEntityRegistry
 
 import scala.concurrent.ExecutionContext
 import akka.cluster.sharding.typed.scaladsl.ClusterSharding
+
 import scala.concurrent.duration._
 import akka.util.Timeout
 import akka.cluster.sharding.typed.scaladsl.EntityRef
+import akka.persistence.query.Offset
+import akka.stream.scaladsl.Flow
+import akka.stream.scaladsl.Source
+import com.lightbend.lagom.scaladsl.persistence.AggregateEventShards
+import com.lightbend.lagom.scaladsl.persistence.AggregateEventTag
+
+import scala.collection.immutable
 
 /**
  * Implementation of the `ShoppingCartService`.
  */
 class ShoppingCartServiceImpl(
-    clusterSharding: ClusterSharding,
-    persistentEntityRegistry: PersistentEntityRegistry,
-    reportRepository: ShoppingCartReportRepository
-)(implicit ec: ExecutionContext)
-    extends ShoppingCartService {
+                               clusterSharding: ClusterSharding,
+                               persistentEntityRegistry: PersistentEntityRegistry,
+                               reportRepository: ShoppingCartReportRepository
+                             )(implicit ec: ExecutionContext)
+  extends ShoppingCartService {
 
   /**
    * Looks up the shopping cart entity for the given ID.
@@ -83,13 +89,12 @@ class ShoppingCartServiceImpl(
   private def confirmationToResult(id: String, confirmation: Confirmation): ShoppingCartView =
     confirmation match {
       case Accepted(cartSummary) => convertShoppingCart(id, cartSummary)
-      case Rejected(reason)      => throw BadRequest(reason)
+      case Rejected(reason) => throw BadRequest(reason)
     }
 
-  override def shoppingCartTopic: Topic[ShoppingCartView] = TopicProducer.taggedStreamWithOffset(Event.Tag) {
-    (tag, fromOffset) =>
-      persistentEntityRegistry
-        .eventStream(tag, fromOffset)
+  override def shoppingCartTopic: Topic[ShoppingCartView] = {
+    val userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed] =
+      Flow[EventStreamElement[Event]]
         .filter(_.event.isInstanceOf[CartCheckedOut])
         .mapAsync(4) {
           case EventStreamElement(id, _, offset) =>
@@ -97,6 +102,32 @@ class ShoppingCartServiceImpl(
               .ask(reply => Get(reply))
               .map(cart => convertShoppingCart(id, cart) -> offset)
         }
+    topicProducerRedux(Event.SingleTag, userFlow)
+    topicProducerRedux(Event.ShardedTag, userFlow)
+  }
+
+  private def topicProducerRedux(
+                                  tag: AggregateEventTag[Event],
+                                  userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+                                ): Topic[ShoppingCartView] =
+    topicProducerRedux(Seq(tag), userFlow)
+
+  private def topicProducerRedux(
+                                  tags: AggregateEventShards[Event],
+                                  userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+                                ): Topic[ShoppingCartView] =
+    topicProducerRedux(tags.allTags.toSeq, userFlow)
+
+  private def topicProducerRedux(
+                                  tags: immutable.Seq[AggregateEventTag[Event]],
+                                  userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+                                ): Topic[ShoppingCartView] = {
+    TopicProducer.taggedStreamWithOffset(tags) {
+      (tag, fromOffset) =>
+        val journalSource: Source[EventStreamElement[Event], NotUsed] = persistentEntityRegistry
+          .eventStream(tag, fromOffset)
+        journalSource.via(userFlow)
+    }
   }
 
   private def convertShoppingCart(id: String, cartSummary: Summary) = {
@@ -110,7 +141,7 @@ class ShoppingCartServiceImpl(
   override def getReport(cartId: String): ServiceCall[NotUsed, ShoppingCartReport] = ServiceCall { _ =>
     reportRepository.findById(cartId).map {
       case Some(cart) => cart
-      case None       => throw NotFound(s"Couldn't find a shopping cart report for $cartId")
+      case None => throw NotFound(s"Couldn't find a shopping cart report for $cartId")
     }
   }
 }

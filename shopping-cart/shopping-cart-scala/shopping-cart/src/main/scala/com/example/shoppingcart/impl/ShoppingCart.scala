@@ -77,11 +77,12 @@ object ShoppingCart {
 
   // SHOPPING CART EVENTS
   sealed trait Event extends AggregateEvent[Event] {
-    override def aggregateTag: AggregateEventTagger[Event] = Event.Tag
+    override def aggregateTag: AggregateEventTagger[Event] = Event.ShardedTag
   }
 
   object Event {
-    val Tag: AggregateEventShards[Event] = AggregateEventTag.sharded[Event](numShards = 10)
+    val ShardedTag: AggregateEventShards[Event] = AggregateEventTag.sharded[Event](numShards = 10)
+    val SingleTag: AggregateEventTag[Event] = AggregateEventTag[Event]
   }
 
   final case class ItemAdded(itemId: String, quantity: Int) extends Event
@@ -117,7 +118,7 @@ object ShoppingCart {
 
   def apply(entityContext: EntityContext[Command]): Behavior[Command] =
     apply(PersistenceId(entityContext.entityTypeKey.name, entityContext.entityId))
-      .withTagger(AkkaTaggerAdapter.fromLagom(entityContext, Event.Tag))
+      .withTagger(AkkaTaggerAdapter.fromLagom(entityContext, Event.ShardedTag))
       .withRetention(RetentionCriteria.snapshotEvery(numberOfEvents = 100, keepNSnapshots = 2))
 
   /**
