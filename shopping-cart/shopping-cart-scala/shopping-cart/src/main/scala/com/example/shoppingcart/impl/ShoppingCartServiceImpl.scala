@@ -93,8 +93,9 @@ class ShoppingCartServiceImpl(
     }
 
   override def shoppingCartTopic: Topic[ShoppingCartView] = {
-    val userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed] =
-      Flow[EventStreamElement[Event]]
+    val flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed] =
+      (s: Source[EventStreamElement[Event], NotUsed]) => {
+      s
         .filter(_.event.isInstanceOf[CartCheckedOut])
         .mapAsync(4) {
           case EventStreamElement(id, _, offset) =>
@@ -102,31 +103,33 @@ class ShoppingCartServiceImpl(
               .ask(reply => Get(reply))
               .map(cart => convertShoppingCart(id, cart) -> offset)
         }
-    topicProducerRedux(Event.SingleTag, userFlow)
-    topicProducerRedux(Event.ShardedTag, userFlow)
+    }
+
+    topicProducerRedux(Event.SingleTag, flowFactory)
+    topicProducerRedux(Event.ShardedTag, flowFactory)
   }
 
   private def topicProducerRedux(
                                   tag: AggregateEventTag[Event],
-                                  userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+                                  flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
                                 ): Topic[ShoppingCartView] =
-    topicProducerRedux(Seq(tag), userFlow)
+    topicProducerRedux(Seq(tag), flowFactory)
 
   private def topicProducerRedux(
                                   tags: AggregateEventShards[Event],
-                                  userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+                                  flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
                                 ): Topic[ShoppingCartView] =
-    topicProducerRedux(tags.allTags.toSeq, userFlow)
+    topicProducerRedux(tags.allTags.toSeq, flowFactory)
 
   private def topicProducerRedux(
                                   tags: immutable.Seq[AggregateEventTag[Event]],
-                                  userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+                                  flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
                                 ): Topic[ShoppingCartView] = {
     TopicProducer.taggedStreamWithOffset(tags) {
       (tag, fromOffset) =>
         val journalSource: Source[EventStreamElement[Event], NotUsed] = persistentEntityRegistry
           .eventStream(tag, fromOffset)
-        journalSource.via(userFlow)
+        flowFactory(journalSource)
     }
   }
 
