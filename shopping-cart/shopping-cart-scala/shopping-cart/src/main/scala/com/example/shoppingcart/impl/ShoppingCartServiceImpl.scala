@@ -102,23 +102,25 @@ class ShoppingCartServiceImpl(
               .ask(reply => Get(reply))
               .map(cart => convertShoppingCart(id, cart) -> offset)
         }
-    TopicProducerRedux.fromTaggedEntity(persistentEntityRegistry, Event.SingleTag) {
+    TopicProducerFoo(persistentEntityRegistry).fromTags(Event.SingleTag) {
       userFlow
     }
-    TopicProducerRedux.fromTaggedEntity(persistentEntityRegistry, Event.ShardedTag) {
+    TopicProducerFoo(persistentEntityRegistry).fromTags( Event.ShardedTag) {
       userFlow
     }
   }
 
-  object TopicProducerRedux {
+  object TopicProducerFoo {
+    def apply(registry: PersistentEntityRegistry): TopicProducerFoo = new TopicProducerFoo(registry)
+  }
+  private class TopicProducerFoo(registry: PersistentEntityRegistry) {
     /**
      * Given a `PersistentEntityRegistry` and a tag creates a stream processing the
      * journalled events via the `userFlow`. The streams processing the events are
      * distribuited across the cluster so Lagom ensures each event is not processed
      * in different nodes. The generated streams will use `at-least-once` semantics.
      */
-    def fromTaggedEntity(
-              registry: PersistentEntityRegistry,
+    def fromTags(
               tag: AggregateEventTag[Event])(
               userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
             ): Topic[ShoppingCartView] =
@@ -130,8 +132,7 @@ class ShoppingCartServiceImpl(
      * the events are distribuited across the cluster so Lagom ensures each event is not
      * processed in different nodes. The generated streams will use `at-least-once` semantics.
      */
-    def fromTaggedEntity(
-              registry: PersistentEntityRegistry,
+    def fromTags(
               tags: AggregateEventShards[Event])(
               userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
             ): Topic[ShoppingCartView] =
