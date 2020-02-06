@@ -93,9 +93,8 @@ class ShoppingCartServiceImpl(
     }
 
   override def shoppingCartTopic: Topic[ShoppingCartView] = {
-    val flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed] =
-      (s: Source[EventStreamElement[Event], NotUsed]) => {
-      s
+    val userFlow =
+      Flow[EventStreamElement[Event]]
         .filter(_.event.isInstanceOf[CartCheckedOut])
         .mapAsync(4) {
           case EventStreamElement(id, _, offset) =>
@@ -103,33 +102,52 @@ class ShoppingCartServiceImpl(
               .ask(reply => Get(reply))
               .map(cart => convertShoppingCart(id, cart) -> offset)
         }
+    TopicProducerRedux.fromTaggedEntity(persistentEntityRegistry, Event.SingleTag) {
+      userFlow
     }
-
-    topicProducerRedux(Event.SingleTag, flowFactory)
-    topicProducerRedux(Event.ShardedTag, flowFactory)
+    TopicProducerRedux.fromTaggedEntity(persistentEntityRegistry, Event.ShardedTag) {
+      userFlow
+    }
   }
 
-  private def topicProducerRedux(
-                                  tag: AggregateEventTag[Event],
-                                  flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
-                                ): Topic[ShoppingCartView] =
-    topicProducerRedux(Seq(tag), flowFactory)
+  object TopicProducerRedux {
+    /**
+     * Given a `PersistentEntityRegistry` and a tag creates a stream processing the
+     * journalled events via the `userFlow`. The streams processing the events are
+     * distribuited across the cluster so Lagom ensures each event is not processed
+     * in different nodes. The generated streams will use `at-least-once` semantics.
+     */
+    def fromTaggedEntity(
+              registry: PersistentEntityRegistry,
+              tag: AggregateEventTag[Event])(
+              userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+            ): Topic[ShoppingCartView] =
+      fromTaggedEntity(registry, Seq(tag))(userFlow)
 
-  private def topicProducerRedux(
-                                  tags: AggregateEventShards[Event],
-                                  flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
-                                ): Topic[ShoppingCartView] =
-    topicProducerRedux(tags.allTags.toSeq, flowFactory)
+    /**
+     * Given a `PersistentEntityRegistry` and a collection of tags creates one stream
+     * per tag processing the journalled events via the `userFlow`.The streams processing
+     * the events are distribuited across the cluster so Lagom ensures each event is not
+     * processed in different nodes. The generated streams will use `at-least-once` semantics.
+     */
+    def fromTaggedEntity(
+              registry: PersistentEntityRegistry,
+              tags: AggregateEventShards[Event])(
+              userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+            ): Topic[ShoppingCartView] =
+      fromTaggedEntity(registry, tags.allTags.toSeq)(userFlow)
 
-  private def topicProducerRedux(
-                                  tags: immutable.Seq[AggregateEventTag[Event]],
-                                  flowFactory: Source[EventStreamElement[Event], NotUsed] => Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
-                                ): Topic[ShoppingCartView] = {
-    TopicProducer.taggedStreamWithOffset(tags) {
-      (tag, fromOffset) =>
-        val journalSource: Source[EventStreamElement[Event], NotUsed] = persistentEntityRegistry
-          .eventStream(tag, fromOffset)
-        flowFactory(journalSource)
+    private def fromTaggedEntity(
+                      registry: PersistentEntityRegistry,
+                      tags: immutable.Seq[AggregateEventTag[Event]])(
+                      userFlow: Flow[EventStreamElement[Event], (ShoppingCartView, Offset), NotUsed]
+                    ): Topic[ShoppingCartView] = {
+      TopicProducer.taggedStreamWithOffset(tags) {
+        (tag, fromOffset) =>
+          val journalSource: Source[EventStreamElement[Event], NotUsed] = registry
+            .eventStream(tag, fromOffset)
+          journalSource.via(userFlow)
+      }
     }
   }
 
