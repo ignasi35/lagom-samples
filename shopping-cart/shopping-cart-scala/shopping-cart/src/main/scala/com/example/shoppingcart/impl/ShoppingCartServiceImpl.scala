@@ -102,18 +102,21 @@ class ShoppingCartServiceImpl(
               .ask(reply => Get(reply))
               .map(cart => convertShoppingCart(id, cart) -> offset)
         }
-    TopicProducerFoo(persistentEntityRegistry).fromTags(Event.SingleTag) {
+    topicSource.fromTags(Event.SingleTag) {
       userFlow
     }
-    TopicProducerFoo(persistentEntityRegistry).fromTags( Event.ShardedTag) {
+    topicSource.fromTags( Event.ShardedTag) {
       userFlow
     }
   }
 
-  object TopicProducerFoo {
-    def apply(registry: PersistentEntityRegistry): TopicProducerFoo = new TopicProducerFoo(registry)
+  val topicSource = TopicSourceFactory(persistentEntityRegistry)
+
+  object TopicSourceFactory {
+    def apply(registry: PersistentEntityRegistry): TopicSourceFactory = new TopicSourceFactory(registry)
   }
-  private class TopicProducerFoo(registry: PersistentEntityRegistry) {
+
+  private class TopicSourceFactory(registry: PersistentEntityRegistry) {
     /**
      * Given a `PersistentEntityRegistry` and a tag creates a stream processing the
      * journalled events via the `userFlow`. The streams processing the events are
